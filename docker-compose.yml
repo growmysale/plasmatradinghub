@@ -1,0 +1,29 @@
+# PropEdge v2 - Local Development Docker Compose
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: propedge-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - propedge-data:/data
+      - ./configs:/app/configs:ro
+    environment:
+      - PROPEDGE_ENV=development
+      - PROPEDGE_DATA_DIR=/data
+      - PROPEDGE_CONFIG=/app/configs/default.yaml
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  propedge-data:
+    driver: local

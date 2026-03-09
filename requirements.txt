@@ -1,0 +1,35 @@
+# PropEdge v2 - Adaptive Neural Trading System Dependencies
+
+# Core API
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+pyyaml>=6.0.1
+websockets>=12.0
+aiohttp>=3.9.0
+python-dotenv>=1.0.0
+httpx>=0.27.0
+
+# Data
+duckdb>=0.10.0
+numpy>=1.26.0
+pandas>=2.1.0
+scipy>=1.12.0
+
+# Machine Learning
+scikit-learn>=1.4.0
+xgboost>=2.0.0
+hmmlearn>=0.3.0
+
+# Gymnasium for RL
+gymnasium>=0.29.0
+
+# Optional ML (install separately if needed)
+# lightgbm>=4.2.0
+# shap>=0.44.0
+# optuna>=3.5.0
+# torch>=2.1.0
+# stable-baselines3>=2.2.0
+
+# Visualization (backend-side)
+matplotlib>=3.8.0

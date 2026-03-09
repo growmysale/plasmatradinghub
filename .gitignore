@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+.venv/
+packages/backend/venv/
+
+# Node
+node_modules/
+ui/dist/
+packages/frontend/node_modules/
+
+# Tauri / Rust
+ui/src-tauri/target/
+
+# Data (generated at runtime)
+data/
+*.db
+*.duckdb
+*.sqlite
+*.pkl
+*.parquet
+*.csv
+data/historical/*.db
+data/historical/*.csv
+data/historical/*.parquet
+data/models/*.pkl
+data/models/*.pt
+data/models/*.joblib
+data/journals/*.json
+
+# Environment
+.env
+.env.local
+.env.production
+configs/secrets.yaml
+configs/api_keys.yaml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Docker
+/tmp/propedge-backend.tar.gz
+
+# Temporary
+.tmp/
+*.tmp

@@ -1,0 +1,73 @@
+# PropEdge v2 - Adaptive Neural Trading System Configuration
+# All values can be overridden here; defaults are sensible.
+
+prop_firm:
+  name: "TopstepX $50K"
+  initial_balance: 50000.0
+  max_loss_limit: 2000.0       # Trailing drawdown
+  profit_target: 3000.0        # Combine target
+  consistency_rule: 0.5        # Best day < 50% of total
+  no_overnight: true
+  commission_free: true
+
+personal_risk:
+  pdll: 200.0                  # Personal Daily Loss Limit
+  pdpt: 300.0                  # Personal Daily Profit Target
+  max_trades_per_day: 3
+  max_risk_per_trade: 50.0     # $ risk per trade
+  min_risk_reward: 2.0
+  cooldown_after_consecutive_losses: 2
+  cooldown_minutes: 15
+  halt_after_daily_losses: 3
+  news_blackout_minutes: 5
+
+data:
+  default_symbol: "MES"
+  default_timeframe: "5min"
+
+features:
+  window_size: 60
+  ema_periods: [8, 20, 50]
+  rsi_periods: [7, 14]
+  atr_period: 14
+  adx_period: 14
+  swing_lookback: 5
+  regime_retrain_days: 30
+
+agents:
+  max_active_agents: 8
+  min_confidence_threshold: 0.55
+  signal_expiry_bars: 3
+  paper_test_days: 30
+
+allocator:
+  combination_method: "weighted_vote"
+  min_combined_confidence: 0.60
+  unanimous_min_agents: 3
+  weight_update_window: 20
+
+backtest:
+  slippage_ticks: 0.5
+  commission_per_side: 0.0
+  walk_forward_train_days: 60
+  walk_forward_test_days: 5
+  min_trades_for_significance: 30
+  significance_level: 0.05
+  monte_carlo_runs: 1000
+
+evolution:
+  population_size: 50
+  mutation_range: 0.20
+  survival_rate: 0.10
+  max_generations: 100
+
+execution:
+  mode: "sandbox"
+  replay_speed: 100.0
+  live_confirmation_days: 14
+  auto_shutdown_loss: 150.0
+
+ui:
+  api_port: 8000
+  frontend_port: 3000
+  theme: "dark"

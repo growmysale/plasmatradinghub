@@ -1,0 +1,37 @@
+# PropEdge v2 - Production EC2 Docker Compose
+# Run on EC2: docker compose -f docker-compose.prod.yml up -d
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: propedge-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - /opt/propedge/data:/data
+      - ./configs:/app/configs:ro
+    environment:
+      - PROPEDGE_ENV=production
+      - PROPEDGE_DATA_DIR=/data
+      - PROPEDGE_CONFIG=/app/configs/default.yaml
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
