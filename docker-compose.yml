@@ -1,5 +1,4 @@
 # PropEdge v2 - Local Development Docker Compose
-version: "3.9"
 
 services:
   backend:
