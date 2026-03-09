@@ -2,20 +2,26 @@
 
 Creates realistic-looking 5-minute candle data for the MES (Micro E-mini S&P 500).
 This is SIMULATED data for testing the platform, not real market data.
+
+Usage:
+    python scripts/generate_sample_data.py [days]
+    python scripts/generate_sample_data.py 90
 """
 import sys
 import os
-import sqlite3
 import numpy as np
 from datetime import datetime, timedelta
+from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from packages.backend.database import get_db_path, init_db
+# Ensure project root on path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from data_engine.candle_store import CandleStore
 
 
 def generate_mes_data(days: int = 90, start_price: float = 5600.0):
     """Generate realistic-looking MES 5-minute candle data."""
-    init_db()
+    store = CandleStore()
 
     candles = []
     price = start_price
@@ -54,7 +60,7 @@ def generate_mes_data(days: int = 90, start_price: float = 5600.0):
             high = max(open_price, close_price) + abs(np.random.normal(0, price * wick_factor * 0.5))
             low = min(open_price, close_price) - abs(np.random.normal(0, price * wick_factor * 0.5))
 
-            # Ensure price stays on tick boundaries (0.25)
+            # Ensure price stays on tick boundaries (0.25 for MES)
             open_price = round(open_price * 4) / 4
             high = round(high * 4) / 4
             low = round(low * 4) / 4
@@ -64,30 +70,28 @@ def generate_mes_data(days: int = 90, start_price: float = 5600.0):
             base_volume = np.random.randint(500, 3000)
             volume = int(base_volume * time_vol_mult)
 
-            candles.append((
-                "MESM6", "5min", bar_time.isoformat(),
-                open_price, high, low, close_price, volume,
-                None, None  # vwap and delta_volume
-            ))
+            candles.append({
+                "symbol": "MESM6",
+                "timeframe": "5min",
+                "timestamp": bar_time.isoformat(),
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": close_price,
+                "volume": volume,
+            })
 
             price = close_price
 
         # Next trading day
         dt += timedelta(days=1)
 
-    # Insert into database
-    db_path = get_db_path()
-    with sqlite3.connect(str(db_path)) as conn:
-        conn.executemany(
-            """INSERT OR REPLACE INTO candles
-               (symbol, timeframe, timestamp, open, high, low, close, volume, vwap, delta_volume)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            candles,
-        )
-
+    # Store candles
+    stored = store.store_candles(candles)
+    count = store.get_candle_count()
     print(f"Generated {len(candles)} candles ({days} trading days)")
-    print(f"Price range: {min(c[3] for c in candles):.2f} - {max(c[4] for c in candles):.2f}")
-    print(f"Database: {db_path}")
+    print(f"Price range: {min(c['open'] for c in candles):.2f} - {max(c['high'] for c in candles):.2f}")
+    print(f"Total candles in store: {count}")
 
 
 if __name__ == "__main__":

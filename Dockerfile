@@ -40,9 +40,13 @@ COPY execution/ ./execution/
 COPY evolution/ ./evolution/
 COPY api/ ./api/
 COPY configs/ ./configs/
+COPY scripts/ ./scripts/
 
 # Create data directories
 RUN mkdir -p /data/duckdb /data/sqlite /data/models /data/logs
+
+# Make entrypoint executable
+RUN chmod +x /app/scripts/docker-entrypoint.sh
 
 # Expose the API port
 EXPOSE 8000
@@ -51,5 +55,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1
 
-# Run the API server
-CMD ["python", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# Use entrypoint script (auto-generates sample data on first run)
+ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
