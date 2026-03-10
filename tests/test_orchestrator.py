@@ -232,3 +232,112 @@ def test_trading_status_endpoint():
     data = resp.json()
     assert "status" in data
     assert data["status"] == "idle"
+
+
+# ── Data & Evolution API Tests ───────────────────────────────────────────
+
+def test_data_status_endpoint():
+    """Test the /api/data/status endpoint."""
+    from fastapi.testclient import TestClient
+    from api.main import app
+
+    client = TestClient(app)
+    resp = client.get("/api/data/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "total_candles" in data
+    assert "timeframes" in data
+    assert "5min" in data["timeframes"]
+
+
+def test_evolution_status_endpoint():
+    """Test the /api/evolution/status endpoint."""
+    from fastapi.testclient import TestClient
+    from api.main import app
+
+    client = TestClient(app)
+    resp = client.get("/api/evolution/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "status" in data
+    assert data["status"] == "idle"
+
+
+def test_evolution_history_endpoint():
+    """Test the /api/evolution/history endpoint."""
+    from fastapi.testclient import TestClient
+    from api.main import app
+
+    client = TestClient(app)
+    resp = client.get("/api/evolution/history")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "status" in data
+    assert "generations" in data
+
+
+def test_yfinance_provider_creation():
+    """Test YFinanceProvider can be created."""
+    from data_engine.providers.yfinance_provider import YFinanceProvider
+
+    provider = YFinanceProvider()
+    assert provider.symbol == "MES"
+
+    status = provider.get_data_status()
+    assert "5min" in status
+    assert "1hour" in status
+    assert "1day" in status
+
+
+def test_evolution_engine_creation():
+    """Test EvolutionEngine can be created and initialized."""
+    from evolution.genetic import EvolutionEngine
+
+    engine = EvolutionEngine()
+    assert engine._generation == 0
+    assert len(engine._population) == 0
+
+    # Initialize with just one agent type to keep test fast
+    engine.initialize_population(["momentum"])
+    assert len(engine._population) > 0
+
+    stats = engine.get_generation_stats()
+    assert stats["generation"] == 0
+    assert stats["population_size"] > 0
+
+
+def test_backtest_engine_run():
+    """Test BacktestEngine can run a simple backtest."""
+    from backtester.engine import BacktestEngine
+    from agents.registry import get_agent
+    from data_engine.candle_store import CandleStore
+
+    store = CandleStore()
+    candles = store.get_candles(limit=1000)
+
+    if candles.empty or len(candles) < 100:
+        pytest.skip("Not enough candle data for backtest test")
+
+    engine = BacktestEngine()
+    agent = get_agent("momentum")
+    result = engine.run(agent, candles)
+
+    assert result.agent_id == "momentum"
+    assert result.is_total_trades >= 0
+    assert len(result.equity_curve) > 0
+
+
+def test_backtest_all_endpoint():
+    """Test the /api/backtest/all endpoint."""
+    from fastapi.testclient import TestClient
+    from api.main import app
+
+    client = TestClient(app)
+    resp = client.post("/api/backtest/all")
+    # May fail if not enough data, which is OK
+    if resp.status_code == 200:
+        data = resp.json()
+        assert "results" in data
+        assert "summary" in data
+    else:
+        assert resp.status_code == 400  # Not enough data

@@ -38,6 +38,8 @@ from allocator.meta_strategy import Allocator
 from risk_manager.governor import RiskManager
 from execution.sandbox import ExecutionEngine
 from orchestrator.trading_loop import TradingOrchestrator, OrchestratorStatus
+from evolution.genetic import EvolutionEngine
+from data_engine.providers.yfinance_provider import YFinanceProvider
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -134,6 +136,32 @@ class TradingModeRequest(BaseModel):
     mode: str  # "sandbox", "paper", "live"
 
 
+class EvolutionStartRequest(BaseModel):
+    generations: int = 10
+    agent_types: Optional[List[str]] = None  # None = all agents
+
+
+class EvolutionResponse(BaseModel):
+    generation: int = 0
+    population_size: int = 0
+    best_fitness: float = 0.0
+    avg_fitness: float = 0.0
+    worst_fitness: float = 0.0
+    status: str = "idle"
+    best_individuals: List[Dict[str, Any]] = []
+
+
+class DataDownloadRequest(BaseModel):
+    source: str = "yfinance"
+    timeframe: str = "5min"
+    days: Optional[int] = None
+
+
+class BacktestAllResponse(BaseModel):
+    results: List[Dict[str, Any]] = []
+    summary: Dict[str, Any] = {}
+
+
 # ── App Setup ────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -200,6 +228,13 @@ _ws_clients: List[WebSocket] = []
 # Orchestrator state
 _orchestrator: Optional[TradingOrchestrator] = None
 _orchestrator_task: Optional[asyncio.Task] = None
+
+# Evolution state
+_evolution_engine: Optional[EvolutionEngine] = None
+_evolution_task: Optional[asyncio.Task] = None
+_evolution_status: str = "idle"  # idle, running, complete, error
+_evolution_generations_target: int = 0
+_evolution_results: List[Dict[str, Any]] = []
 
 
 # ── REST Endpoints ───────────────────────────────────────────────────────
@@ -501,6 +536,258 @@ async def get_system_config():
             "method": config.allocator.combination_method,
             "min_confidence": config.allocator.min_combined_confidence,
         },
+    }
+
+
+# ── Data Management Endpoints ─────────────────────────────────────────────
+
+@app.get("/api/data/status")
+async def get_data_status():
+    """Get status of all stored market data."""
+    provider = YFinanceProvider()
+    status = provider.get_data_status()
+
+    # Add sample data info
+    store = CandleStore()
+    total = sum(info["count"] for info in status.values())
+
+    return {
+        "total_candles": total,
+        "timeframes": status,
+        "sources": ["sample_generator", "yfinance"],
+    }
+
+
+@app.post("/api/data/download")
+async def download_data(req: DataDownloadRequest):
+    """Download historical data from free sources."""
+    if req.source != "yfinance":
+        raise HTTPException(400, f"Unsupported source: {req.source}")
+
+    provider = YFinanceProvider()
+
+    if req.timeframe == "all":
+        results = provider.download_multi_timeframe()
+        total = sum(results.values())
+        return {
+            "status": "complete",
+            "total_candles": total,
+            "timeframes": results,
+        }
+
+    count = provider.download_and_store(
+        timeframe=req.timeframe, days=req.days
+    )
+    return {
+        "status": "complete",
+        "candles_downloaded": count,
+        "timeframe": req.timeframe,
+    }
+
+
+# ── Backtest All Agents ──────────────────────────────────────────────────
+
+@app.post("/api/backtest/all", response_model=BacktestAllResponse)
+async def run_backtest_all():
+    """Run walk-forward backtest for ALL agents and compare results."""
+    store = CandleStore()
+    candles = store.get_candles(limit=10000)
+
+    if candles.empty or len(candles) < 500:
+        raise HTTPException(400, "Not enough candle data for backtesting")
+
+    engine = BacktestEngine()
+    agents = get_all_agents()
+    results = []
+
+    for agent in agents:
+        try:
+            result = engine.walk_forward(agent, candles, train_days=30, test_days=5)
+            agent_result = {
+                "agent_id": agent.agent_id,
+                "agent_name": agent.agent_name,
+                "oos_trades": result.oos_total_trades,
+                "oos_win_rate": result.oos_win_rate,
+                "oos_profit_factor": result.oos_profit_factor,
+                "oos_sharpe": result.oos_sharpe,
+                "oos_max_drawdown": result.oos_max_drawdown,
+                "oos_expectancy": result.oos_expectancy,
+                "wf_windows": result.wf_num_windows,
+                "wf_pct_profitable": result.wf_pct_profitable_windows,
+                "mc_ruin_prob": result.mc_probability_of_ruin,
+                "p_value": result.p_value,
+                "is_significant": result.is_significant,
+            }
+            results.append(agent_result)
+        except Exception as e:
+            logger.error(f"Backtest failed for {agent.agent_id}: {e}")
+            results.append({
+                "agent_id": agent.agent_id,
+                "agent_name": agent.agent_name,
+                "error": str(e),
+            })
+
+    # Summary
+    valid = [r for r in results if "oos_sharpe" in r]
+    summary = {}
+    if valid:
+        best = max(valid, key=lambda x: x.get("oos_sharpe", -999))
+        summary = {
+            "total_agents": len(agents),
+            "agents_with_trades": len([r for r in valid if r.get("oos_trades", 0) > 0]),
+            "best_agent": best.get("agent_id"),
+            "best_sharpe": best.get("oos_sharpe"),
+            "avg_sharpe": round(
+                sum(r.get("oos_sharpe", 0) for r in valid) / len(valid), 4
+            ),
+            "significant_agents": len([r for r in valid if r.get("is_significant")]),
+        }
+
+    return BacktestAllResponse(results=results, summary=summary)
+
+
+# ── Evolution Endpoints ──────────────────────────────────────────────────
+
+@app.post("/api/evolution/start")
+async def start_evolution(req: EvolutionStartRequest):
+    """Start genetic strategy evolution in background."""
+    global _evolution_engine, _evolution_task, _evolution_status
+    global _evolution_generations_target, _evolution_results
+
+    if _evolution_status == "running":
+        raise HTTPException(400, "Evolution already running")
+
+    store = CandleStore()
+    candles = store.get_candles(limit=10000)
+
+    if candles.empty or len(candles) < 500:
+        raise HTTPException(400, "Not enough candle data for evolution")
+
+    _evolution_engine = EvolutionEngine()
+    _evolution_engine.initialize_population(req.agent_types)
+    _evolution_status = "running"
+    _evolution_generations_target = req.generations
+    _evolution_results = []
+
+    async def _run_evolution():
+        global _evolution_status, _evolution_results
+        try:
+            for gen in range(req.generations):
+                if _evolution_status != "running":
+                    break
+
+                survivors = _evolution_engine.evolve_generation(candles)
+                stats = _evolution_engine.get_generation_stats()
+
+                gen_result = {
+                    "generation": stats["generation"],
+                    "best_fitness": round(stats["best_fitness"], 6),
+                    "avg_fitness": round(float(stats["avg_fitness"]), 6),
+                    "population_size": stats["population_size"],
+                    "best_individual": {
+                        "id": survivors[0].id if survivors else "",
+                        "agent_type": survivors[0].agent_type if survivors else "",
+                        "fitness": survivors[0].fitness if survivors else 0,
+                        "oos_sharpe": survivors[0].oos_sharpe if survivors else 0,
+                        "oos_pf": survivors[0].oos_profit_factor if survivors else 0,
+                        "params": survivors[0].params if survivors else {},
+                    } if survivors else {},
+                }
+                _evolution_results.append(gen_result)
+
+                # Broadcast progress to WebSocket clients
+                await broadcast_ws({
+                    "type": "evolution_progress",
+                    **gen_result,
+                })
+
+                # Yield control to event loop
+                await asyncio.sleep(0.1)
+
+            _evolution_status = "complete"
+            await broadcast_ws({
+                "type": "evolution_complete",
+                "generations": len(_evolution_results),
+                "best_fitness": _evolution_results[-1]["best_fitness"]
+                if _evolution_results else 0,
+            })
+
+        except Exception as e:
+            logger.error(f"Evolution error: {e}", exc_info=True)
+            _evolution_status = "error"
+
+    _evolution_task = asyncio.create_task(_run_evolution())
+
+    return {
+        "status": "started",
+        "generations_target": req.generations,
+        "population_size": len(_evolution_engine._population),
+    }
+
+
+@app.get("/api/evolution/status", response_model=EvolutionResponse)
+async def get_evolution_status():
+    """Get current evolution status and results."""
+    if not _evolution_engine:
+        return EvolutionResponse(status="idle")
+
+    stats = _evolution_engine.get_generation_stats()
+    best = _evolution_engine.get_best_individuals(5)
+
+    best_list = [
+        {
+            "id": ind.id,
+            "agent_type": ind.agent_type,
+            "fitness": round(ind.fitness, 6),
+            "oos_sharpe": round(ind.oos_sharpe, 4),
+            "oos_profit_factor": round(ind.oos_profit_factor, 4),
+            "oos_max_drawdown": round(ind.oos_max_drawdown, 2),
+            "params": ind.params,
+        }
+        for ind in best
+    ]
+
+    return EvolutionResponse(
+        generation=stats["generation"],
+        population_size=stats["population_size"],
+        best_fitness=round(stats["best_fitness"], 6),
+        avg_fitness=round(float(stats["avg_fitness"]), 6),
+        worst_fitness=round(stats["worst_fitness"], 6),
+        status=_evolution_status,
+        best_individuals=best_list,
+    )
+
+
+@app.post("/api/evolution/stop")
+async def stop_evolution():
+    """Stop the running evolution."""
+    global _evolution_status, _evolution_task
+
+    if _evolution_status != "running":
+        raise HTTPException(400, "Evolution not running")
+
+    _evolution_status = "stopped"
+
+    if _evolution_task:
+        _evolution_task.cancel()
+        try:
+            await _evolution_task
+        except asyncio.CancelledError:
+            pass
+
+    return {
+        "status": "stopped",
+        "generations_completed": len(_evolution_results),
+    }
+
+
+@app.get("/api/evolution/history")
+async def get_evolution_history():
+    """Get full evolution history (all generation results)."""
+    return {
+        "status": _evolution_status,
+        "generations": _evolution_results,
+        "total_generations": len(_evolution_results),
     }
 
 
