@@ -83,9 +83,11 @@ export default function CommandCenter() {
   };
 
   const r = risk || {
-    balance: 50000, drawdown: 0, distance_to_max_loss: 2000,
-    daily_pnl: 0, daily_trades: 0, pdll: 200, pdpt: 300,
-    pdll_remaining: 200, pdpt_remaining: 300, should_halt: false,
+    balance: 50000, peak_balance: 50000, drawdown: 0, drawdown_pct: 0,
+    max_loss_floor: 48000, distance_to_max_loss: 2000,
+    daily_pnl: 0, daily_trades: 0, consecutive_losses: 0,
+    pdll: 200, pdpt: 300, pdll_remaining: 200, pdpt_remaining: 300,
+    should_halt: false,
   };
 
   const pnlColor = o.today_pnl >= 0 ? "text-emerald-400" : "text-red-400";
