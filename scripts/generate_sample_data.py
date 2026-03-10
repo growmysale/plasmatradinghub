@@ -87,7 +87,7 @@ def generate_mes_data(days: int = 90, start_price: float = 5600.0):
         dt += timedelta(days=1)
 
     # Store candles
-    stored = store.store_candles(candles)
+    stored = store.insert_candles(candles)
     count = store.get_candle_count()
     print(f"Generated {len(candles)} candles ({days} trading days)")
     print(f"Price range: {min(c['open'] for c in candles):.2f} - {max(c['high'] for c in candles):.2f}")
