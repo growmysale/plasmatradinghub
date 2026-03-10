@@ -56,5 +56,11 @@ def test_evolution_imports():
     from evolution.genetic import EvolutionEngine
 
 
+def test_orchestrator_imports():
+    from orchestrator.trading_loop import TradingOrchestrator, OrchestratorStatus
+    from orchestrator.contract_resolver import ContractResolver
+    from orchestrator.state import OrchestratorState
+
+
 def test_api_imports():
     from api.main import app

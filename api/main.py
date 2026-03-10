@@ -37,6 +37,7 @@ from backtester.engine import BacktestEngine, compute_metrics
 from allocator.meta_strategy import Allocator
 from risk_manager.governor import RiskManager
 from execution.sandbox import ExecutionEngine
+from orchestrator.trading_loop import TradingOrchestrator, OrchestratorStatus
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -125,11 +126,19 @@ class DailyStats(BaseModel):
     regime: str = ""
 
 
+class TradingStartRequest(BaseModel):
+    mode: str = "sandbox"  # "sandbox", "paper", "live"
+
+
+class TradingModeRequest(BaseModel):
+    mode: str  # "sandbox", "paper", "live"
+
+
 # ── App Setup ────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize on startup."""
+    """Initialize on startup, cleanup on shutdown."""
     logger.info("PropEdge v2 API starting...")
     config = get_config()
 
@@ -142,6 +151,13 @@ async def lifespan(app: FastAPI):
         logger.info("Sample data generated")
 
     yield
+
+    # Shutdown: stop orchestrator gracefully
+    global _orchestrator
+    if _orchestrator and _orchestrator.status != OrchestratorStatus.IDLE:
+        logger.info("Stopping orchestrator on shutdown...")
+        await _orchestrator.stop()
+
     logger.info("PropEdge v2 API shutting down")
 
 
@@ -180,6 +196,10 @@ _allocator = Allocator()
 _risk_mgr = RiskManager()
 _exec_engine = ExecutionEngine()
 _ws_clients: List[WebSocket] = []
+
+# Orchestrator state
+_orchestrator: Optional[TradingOrchestrator] = None
+_orchestrator_task: Optional[asyncio.Task] = None
 
 
 # ── REST Endpoints ───────────────────────────────────────────────────────
@@ -484,6 +504,90 @@ async def get_system_config():
     }
 
 
+# ── Trading Control Endpoints ─────────────────────────────────────────────
+
+@app.post("/api/trading/start")
+async def start_trading(req: TradingStartRequest):
+    """Start the trading orchestrator."""
+    global _orchestrator, _orchestrator_task, _exec_engine, _risk_mgr, _allocator
+
+    if _orchestrator and _orchestrator.status == OrchestratorStatus.RUNNING:
+        raise HTTPException(400, "Trading loop already running")
+
+    mode = TradingMode(req.mode)
+
+    # Safety: LIVE mode requires explicit env var
+    if mode == TradingMode.LIVE:
+        if os.getenv("TRADOVATE_LIVE", "false").lower() != "true":
+            raise HTTPException(
+                403,
+                "TRADOVATE_LIVE=true environment variable required for live trading"
+            )
+
+    _orchestrator = TradingOrchestrator(mode=mode, broadcast_fn=broadcast_ws)
+
+    # Point module-level singletons to orchestrator's instances
+    # so existing REST endpoints (/api/risk, /api/overview, etc.) reflect live state
+    _exec_engine = _orchestrator.exec_engine
+    _risk_mgr = _orchestrator.risk_manager
+    _allocator = _orchestrator.allocator
+
+    _orchestrator_task = asyncio.create_task(_orchestrator.start())
+
+    logger.info(f"Trading orchestrator started in {mode.value} mode")
+    return {"status": "started", "mode": mode.value}
+
+
+@app.post("/api/trading/stop")
+async def stop_trading():
+    """Stop the trading orchestrator."""
+    global _orchestrator, _orchestrator_task
+
+    if not _orchestrator or _orchestrator.status == OrchestratorStatus.IDLE:
+        raise HTTPException(400, "Trading loop not running")
+
+    await _orchestrator.stop()
+
+    if _orchestrator_task:
+        _orchestrator_task.cancel()
+        try:
+            await _orchestrator_task
+        except asyncio.CancelledError:
+            pass
+
+    logger.info("Trading orchestrator stopped")
+    return {"status": "stopped"}
+
+
+@app.get("/api/trading/status")
+async def get_trading_status():
+    """Get orchestrator status and metrics."""
+    if not _orchestrator:
+        return {"status": "idle", "mode": "sandbox", "metrics": {}}
+    return _orchestrator.get_status()
+
+
+@app.post("/api/trading/mode")
+async def set_trading_mode(req: TradingModeRequest):
+    """Switch trading mode. Stops and restarts the orchestrator."""
+    new_mode = TradingMode(req.mode)
+
+    # Safety: LIVE mode requires explicit env var
+    if new_mode == TradingMode.LIVE:
+        if os.getenv("TRADOVATE_LIVE", "false").lower() != "true":
+            raise HTTPException(
+                403,
+                "TRADOVATE_LIVE=true environment variable required for live trading"
+            )
+
+    # Stop current orchestrator if running
+    if _orchestrator and _orchestrator.status == OrchestratorStatus.RUNNING:
+        await stop_trading()
+
+    # Start with new mode
+    return await start_trading(TradingStartRequest(mode=req.mode))
+
+
 # ── WebSocket ────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/live")
@@ -515,6 +619,17 @@ async def websocket_live(ws: WebSocket):
                     if latest:
                         _exec_engine.flatten_all(latest.close, latest.ts, "Manual flatten")
                     await ws.send_json({"type": "flatten_confirmed"})
+                elif cmd == "get_trading_status":
+                    if _orchestrator:
+                        await ws.send_json({
+                            "type": "trading_status",
+                            **_orchestrator.get_status(),
+                        })
+                    else:
+                        await ws.send_json({
+                            "type": "trading_status",
+                            "status": "idle",
+                        })
 
             except json.JSONDecodeError:
                 pass

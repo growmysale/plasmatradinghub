@@ -37,6 +37,7 @@ COPY backtester/ ./backtester/
 COPY allocator/ ./allocator/
 COPY risk_manager/ ./risk_manager/
 COPY execution/ ./execution/
+COPY orchestrator/ ./orchestrator/
 COPY evolution/ ./evolution/
 COPY api/ ./api/
 COPY configs/ ./configs/

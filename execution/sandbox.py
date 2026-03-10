@@ -75,17 +75,107 @@ class ExecutionEngine:
             self._callbacks[event].append(callback)
 
     def submit_order(self, order: Order, current_candle: Candle) -> FillResult:
-        """Submit an order for execution.
+        """Submit an order for execution (synchronous).
 
-        In sandbox/paper mode, simulates fill. In live mode, would
-        route to broker API.
+        In sandbox/paper mode, simulates fill.
+        For live execution, use async_submit_order() instead.
         """
         if self.mode == TradingMode.LIVE:
-            # TODO: Route to Tradovate API
-            logger.warning("Live execution not yet implemented")
-            return FillResult(filled=False, reason="Live mode not implemented")
+            logger.warning(
+                "Live execution requires async_submit_order() — "
+                "falling back to simulated fill"
+            )
+            return self._simulate_fill(order, current_candle)
 
         return self._simulate_fill(order, current_candle)
+
+    async def async_submit_order(
+        self,
+        order: Order,
+        current_candle: Candle,
+        tradovate=None,
+        contract_symbol: str = "",
+    ) -> FillResult:
+        """Async order submission supporting all modes.
+
+        Args:
+            order: The order to execute.
+            current_candle: Current candle for fill simulation.
+            tradovate: TradovateClient instance (required for LIVE).
+            contract_symbol: Tradovate contract symbol (e.g., "MESH6").
+
+        Returns:
+            FillResult with fill details.
+        """
+        if self.mode == TradingMode.LIVE:
+            if tradovate is None:
+                return FillResult(
+                    filled=False, reason="No Tradovate client for LIVE mode"
+                )
+            return await self._live_fill(order, tradovate, contract_symbol)
+        else:
+            # SANDBOX and PAPER use simulated fills
+            return self._simulate_fill(order, current_candle)
+
+    async def _live_fill(
+        self, order: Order, tradovate, contract_symbol: str
+    ) -> FillResult:
+        """Execute order through Tradovate REST API.
+
+        Maps internal Order → Tradovate place_order() call.
+        Parses Tradovate response → FillResult.
+        """
+        try:
+            action = "Buy" if order.direction == Direction.LONG else "Sell"
+            order_type_map = {
+                OrderType.MARKET: "Market",
+                OrderType.LIMIT: "Limit",
+                OrderType.STOP: "Stop",
+                OrderType.STOP_LIMIT: "StopLimit",
+            }
+
+            result = await tradovate.rest.place_order(
+                account_id=tradovate._account_id,
+                action=action,
+                symbol=contract_symbol,
+                order_qty=order.quantity,
+                order_type=order_type_map.get(order.order_type, "Market"),
+                price=(
+                    order.price
+                    if order.order_type != OrderType.MARKET
+                    else None
+                ),
+                stop_price=(
+                    order.stop_loss
+                    if order.order_type
+                    in (OrderType.STOP, OrderType.STOP_LIMIT)
+                    else None
+                ),
+            )
+
+            # Parse Tradovate response
+            ord_status = result.get("ordStatus", "")
+            if ord_status == "Filled":
+                return FillResult(
+                    filled=True,
+                    fill_price=float(result.get("avgPx", order.price)),
+                    slippage_ticks=0,
+                )
+            elif ord_status in ("Working", "Accepted"):
+                # Order accepted but not yet filled
+                return FillResult(
+                    filled=False,
+                    reason=f"Order working: {ord_status}",
+                )
+            else:
+                return FillResult(
+                    filled=False,
+                    reason=f"Tradovate reject: "
+                    f"{result.get('rejectReason', 'unknown')}",
+                )
+        except Exception as e:
+            logger.error(f"Live order execution failed: {e}")
+            return FillResult(filled=False, reason=f"Execution error: {e}")
 
     def _simulate_fill(self, order: Order, candle: Candle) -> FillResult:
         """Simulate order fill with realistic slippage."""
